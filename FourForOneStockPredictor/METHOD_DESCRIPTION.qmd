@@ -1,0 +1,385 @@
+---
+title: "FourForOneStockPredictor"
+author: Chun Kit Chan (Del/Calvin), Shenglan Li, Xiaoying Zhang
+format: html
+editor: visual
+---
+
+## Introduction
+
+Our team aims to build an interactive application or markdown to allow users to estimate future stock price. We do so through examining potential correlated dependence among a set of stocks, and we first construct our model for prediction through existing data. In this markdown, we will present our work so far in a reproducible manner.
+
+## Step 1: loading packages
+
+```{r, cache=TRUE, warning=TRUE}
+libraries = c("tidyverse", "lubridate", "alphavantager", "ggplot2", "tidyr")
+for (lib in libraries) {
+  if (system.file(package = lib) == "") {
+    install.packages(lib)
+  }
+  if (!(system.file(package = lib) == "")) {
+    library(lib, character.only = TRUE)
+  }
+}
+```
+
+## Step 2: Accessing data
+
+We access free financial data through a R API named "Alpha Vantage API". To use this API, our user needs to first obtain a free API key at https://www.alphavantage.co.
+
+Here, we will proceed with our team API key.
+
+```{r cache=TRUE, warning=TRUE}
+# SETUP API KEY
+av_api_key("AQ0HLGYS3N1NKBF5")
+```
+
+We will now upload the financial data for a set of stock. Our user can specify the stocks one wants to exam. As by now, we will proceed with stocks selected by our team. Currently, the API has a limit on the number of stocks that can be accessed per minute. As a result, we will restrain our choice to 4 feature stocks.
+
+```{r cache=TRUE, warning=TRUE}
+# AMZN = Amazon; QCOM = Qualcomm; INTC = Intel; MSFT = "Microsoft; IBM = IBM
+feature_stocks = c("AMZN", "QCOM", "INTC", "MSFT")
+
+# AAPL stands for Apple
+label_stock = "AAPL"
+```
+
+We will now first examine the data downloaded for Apple, understanding its data structure, followed by generalizing the treatment to other stocks later.
+
+```{r cache=TRUE, warning=TRUE}
+AAPL <- av_get("AAPL", av_fun = "TIME_SERIES_DAILY_ADJUSTED", outputsize = "full")
+head(AAPL)
+```
+
+## Step 3: Selecting variables/features and response, and applicable data transformation
+
+We will use the close price of a stock as both of our features as well as labels for our later regression model. These prices are given by the column "close".
+
+```{r cache=TRUE, warning=TRUE}
+close_price = AAPL$close
+```
+
+We will also save the "timestamp" of our target stock, here APPLE, as a feature of our regression models. Since we will be using financial data all covering the same range of timestamps, we will convert this column into a list of time intervals starting from 0.
+
+```{r cache=TRUE, warning=TRUE}
+input_time = AAPL$timestamp
+diff_time = diff(input_time)
+temp_time = c(0, diff_time)
+output_time = c()
+for (i in seq_along(temp_time)) {
+  if (i == 1) {
+    output_time[i] = temp_time[i]
+  } else {
+    output_time[i] = temp_time[i] + output_time[i-1]
+  }
+}
+```
+
+We now convert the above steps into a function.
+
+```{r cache=TRUE, warning=TRUE}
+CONVERT_TIME = function(input_time) {
+  diff_time = diff(input_time)
+  temp_time = c(0, diff_time)
+  output_time = c()
+  for (i in seq_along(temp_time)) {
+    if (i == 1) {
+      output_time[i] = temp_time[i]
+    } else {
+      output_time[i] = temp_time[i] + output_time[i-1]
+    }
+  }
+  return(output_time)
+}
+```
+
+We want to transform our data so that we can use past stock price to infer the current stock price. To do so, we construct a shift function to shift our close prices with user-specified lag.
+
+```{r}
+SHIFT = function(input_list, shift=0) {
+  output_list = c()
+  for (i in seq_along(input_list)) {
+    if (i <= shift) {
+      output_list[i] = NA
+    } else {
+      output_list[i] = input_list[i - shift]
+    }
+  }
+  return(output_list)
+}
+```
+
+Using the stock price of Apple as a showcase, we will apply the SHIFT function to its closed price for a set of different amount of shifts, followed by joining the results together into a single dataframe.
+
+```{r cache=TRUE, warning=TRUE}
+shifts = c(1, 2, 3, 4, 5)
+df = data.frame("TIME" = output_time,
+                "C0" = close_price)
+processed = 1
+for (shift in shifts) {
+  temp_column = SHIFT(close_price, shift = shift)
+  col_name = paste("C", as.character(processed), sep = "")
+  df[col_name] = temp_column
+  processed = processed + 1
+}
+
+head(df)
+```
+
+### Step 4: Full data transformation
+
+After examining our data structure, we will now construct a function/pipeline to automate the transformation. This step will be done in conjunction with data download.
+
+```{r cache=TRUE, warning=TRUE}
+DOWNLOAD_DATA = function(label_stock, feature_stocks) {
+  label_data <- av_get(label_stock, 
+                       av_fun = "TIME_SERIES_DAILY_ADJUSTED", 
+                       outputsize = "full", 
+                       show_col_types = FALSE)
+  
+  time_col = CONVERT_TIME(label_data$timestamp)
+  label_col = label_data$close
+  df = data.frame("TIME" = time_col,
+                  "LABEL" = label_col)
+  processed = 0
+  for (feature_stock in feature_stocks) {
+    feature_data <- av_get(feature_stock, 
+                           av_fun = "TIME_SERIES_DAILY_ADJUSTED", 
+                           outputsize = "full", 
+                           show_col_types = FALSE)
+    processed = processed + 1
+    col_name = paste("O", as.character(processed), sep = "")
+    df[col_name] = feature_data$close
+  }
+  return(df)
+}
+
+TRANSFORM_DATA = function(input_df, shifts) {
+  num_feature_stock = ncol(input_df) - 2
+  output_df = data.frame(
+    "TIME" = input_df$TIME,
+    "LABEL" = input_df$LABEL
+  )
+  #--APPLY SHIFT TO LABEL
+  processed = 0
+  in_col_name = "LABEL"
+  for (shift in shifts) {
+      processed = processed + 1
+      temp_col = SHIFT(input_df$LABEL, shift = shift)
+      col_name = paste("C", as.character(processed), sep = "")
+      output_df[col_name] = temp_col
+  }
+  #-APPLY SHIFT TO FEATURES
+  for (i in 1:num_feature_stock) {
+    in_col_name = paste("O", as.character(i), sep = "")
+    feature_data = input_df[[in_col_name]]
+    for (shift in shifts) {
+      processed = processed + 1
+      temp_col = SHIFT(feature_data, shift = shift)
+      col_name = paste("C", as.character(processed), sep = "")
+      output_df[col_name] = temp_col
+    }
+  }
+  return(drop_na(output_df))
+}
+
+GENERATE_INPUT = function(input_df, shifts, forward_time = 1) {
+  #-CONSTRUCT THE TIMESTAMP FOR PREDICTION
+  time_out = tail(input_df$TIME, 1) + forward_time
+  
+  output_for_lm = data.frame("TIME" = time_out)
+  
+  #-CONSTRUCT INPUTS FOR SELECTED STOCKS
+  num_feature_stock = ncol(input_df) - 2
+  processed = 0
+  for (shift in shifts) {
+    processed = processed + 1
+    col_name = paste("C", as.character(processed), sep = "")
+    output_for_lm[col_name] = tail(input_df$LABEL, shift)[1]
+  }
+  for (i in 1:num_feature_stock) {
+    in_col_name = paste("O", as.character(i), sep = "")
+    feature_data = input_df[[in_col_name]]
+    for (shift in shifts) {
+      processed = processed + 1
+      col_name = paste("C", as.character(processed), sep = "")
+      output_for_lm[col_name] = tail(feature_data, shift)[1]
+    }
+  }
+  return(output_for_lm)
+}
+```
+
+We now test our data transformation function.
+
+```{r cache=TRUE, warning=TRUE}
+shifts = c(1,2,3,4,5)
+download_data = DOWNLOAD_DATA(label_stock = label_stock,
+                              feature_stocks = feature_stocks)
+```
+
+```{r cache=TRUE, warning=TRUE}
+transformed_data = TRANSFORM_DATA(input_df = download_data,
+                                  shifts = shifts)
+inputs_for_prediction = GENERATE_INPUT(input_df = download_data,
+                                       shifts = shifts,
+                                       forward_time = 1)
+
+```
+
+## Step 5: Build a regression model with dynamic formula
+
+We will construct a formula for our linear regression model. This formula will include the leading order term that mimics potential interaction among our feature stocks.
+
+```{r cache=TRUE, warning=TRUE}
+FORMULA_CONSTRUCT = function(label_stock, feature_stocks, shifts) {
+  linear_terms = c("TIME")
+  used_stocks = c(label_stock, feature_stocks)
+  processed = 1
+  for (i in seq_along(used_stocks)) {
+    for (shift in shifts) {
+      col_name = paste("C", as.character(processed), sep = "")
+      linear_terms[processed+1] = col_name
+      processed = processed + 1
+    }
+  }
+  non_linear_terms = c()
+  for (i in 1:length(linear_terms)) {
+    if (i == 1) {
+      non_linear_terms[i] = paste("(", linear_terms[i], sep = "")
+    } else if (i == length(linear_terms)) {
+      non_linear_terms[i] = paste(linear_terms[i], ")^2", sep = "")
+    } else {
+      non_linear_terms[i] = linear_terms[i]
+    }
+  }
+  return(
+    reformulate(
+      termlabels = c(linear_terms, non_linear_terms),
+      response = "LABEL"
+    )
+  )
+}
+```
+
+```{r}
+my_formula = FORMULA_CONSTRUCT(label_stock = label_stock, 
+                        feature_stocks = feature_stocks,
+                        shifts = shifts)
+my_formula
+```
+
+```{r cache=TRUE, warning=TRUE}
+REGRESSION_MODEL = function(input_df, label_stock, feature_stocks, shifts) {
+  return(
+    lm(FORMULA_CONSTRUCT(label_stock = label_stock, 
+                         feature_stocks = feature_stocks,
+                         shifts = shifts),
+       data = input_df)
+  )
+}
+```
+
+We will now train our model to prove its feasibility.
+
+```{r cache=TRUE, warning=TRUE}
+our_model = REGRESSION_MODEL(
+  transformed_data,
+  label_stock,
+  feature_stocks,
+  shifts
+)
+```
+
+## Step 6: Predictions and visualization
+
+We want to wrap up our pipeline with a prediction and a visualization to indicate the changes of stock price.
+
+```{r cache=TRUE, warning=TRUE}
+our_predictions = predict(our_model, newdata = inputs_for_prediction)
+```
+
+```{r cache=TRUE, warning=TRUE}
+my_visualization = function(input_df, prediction, forward_time = 1) {
+  num_row = nrow(input_df)
+  input_time = input_df$TIME
+  input_label = input_df$LABEL
+  add_time = tail(input_time, 1)[1] + forward_time
+  input_time[num_row + 1] = add_time
+  input_label[num_row + 1] = prediction
+  color_label = c()
+  for (i in 1:num_row) {
+    color_label[i] = "Actual"
+  }
+  color_label[num_row + 1] = "Prediction"
+  plot_df = data.frame(
+    "TIME" = input_time,
+    "STOCK_PRICE" = input_label,
+    "PREDICTION_OR_ACTUAL" = color_label
+  )
+  ggplot(plot_df,
+         aes(x = TIME, y = STOCK_PRICE, color=PREDICTION_OR_ACTUAL)
+         ) + geom_point() + labs(y = "Stock price (USD)", x = "Time (Number of days from our referecne date)", color = "Actual data/Prediction")
+}
+```
+
+```{r cache=TRUE, warning=TRUE}
+my_visualization(transformed_data, our_predictions)
+```
+
+```{r}
+message = paste("The R^2 score for the model based on this set of stocks is: ", summary(our_model)[9])
+print(message)
+```
+
+We extend our visualization for EDA concerning correlation across different stocks.
+
+```{r cache=TRUE,warning=TRUE}
+my_correlation_vis = function(input_df, select_feature, label_stock, feature_stocks) {
+  n_feature = ncol(input_df) - 2
+  select_col = paste("O", as.character(select_feature), sep = "")
+  plot_df = data.frame(
+    "LABEL" = input_df$LABEL,
+    "FEATURE" = input_df[[select_col]]
+  )
+  ggplot(plot_df,
+         aes(x = FEATURE, y = LABEL)
+         ) + geom_point() + labs(y = paste(label_stock, "(USD)"), 
+                                 x = paste(feature_stocks[select_feature], "(USD)")
+         )
+}
+```
+
+```{r}
+my_correlation_vis(download_data, 1, label_stock, feature_stocks)
+```
+
+```{r}
+library(tidyr)
+my_all_in_one = function(input_df, label_stock, feature_stocks) {
+  #--Rename our dataframe
+  colnames(input_df)[2] = label_stock
+  colnames(input_df)[3] = feature_stocks[1]
+  colnames(input_df)[4] = feature_stocks[2]
+  colnames(input_df)[5] = feature_stocks[3]
+  colnames(input_df)[6] = feature_stocks[4]
+  #--Convert from wide to long format
+  plot_df = gather(
+    input_df,
+    StockKey,
+    StockPrice,
+    2:6,
+    factor_key=TRUE
+  )
+  ggplot(plot_df, aes(x = TIME, y = StockPrice, color = StockKey)) + 
+    geom_line() + 
+    labs(
+      y = "Stock price (USD)", 
+      x = "Time (Number of days from our referecne date)",
+      color = "Stock key")
+}
+```
+
+```{r}
+my_all_in_one(download_data, label_stock, feature_stocks)
+```

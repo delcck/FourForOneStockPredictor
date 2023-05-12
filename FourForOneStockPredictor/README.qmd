@@ -1,0 +1,19 @@
+---
+title: "How to start?"
+author: Chun Kit Chan (Del/Calvin), Shenglan Li, Xiaoying Zhang
+format: pdf
+editor: visual
+---
+
+## Description
+
+This document describes how to start our "FourForOneStockPredictor" App, which is an improved version of our original "StockPrediction" app released for a course project of Shenglan and Xiaoying. 
+
+First, clean and install our package. You can so do by running "Clean and Install" at the "Build" session if you are using Rstudio.
+
+Second, execute our shiny app through the following commands:
+
+```{r}
+library(FourForOneStockPredictor)
+run_app()
+```
