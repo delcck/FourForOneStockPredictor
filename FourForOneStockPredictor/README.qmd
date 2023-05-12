@@ -17,3 +17,6 @@ Second, execute our shiny app through the following commands:
 library(FourForOneStockPredictor)
 run_app()
 ```
+## Remark
+
+We created this app out of our own imagination as the lead developer, Chun Kit Chan, has no pre-existing knowledge about Finance. Thus, in case, if our idea here happen to have used your published work, please kindly contact us so that we can cite your work in our app. If you are reusing any part of our code for your future production, please cite use as well. Cheers!
